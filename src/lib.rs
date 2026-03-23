@@ -68,7 +68,7 @@ set(CMAKE_C_STANDARD 11)
 include(FetchContent)
 FetchContent_Declare(nanocbor
     GIT_REPOSITORY https://github.com/bergzand/NanoCBOR.git
-    GIT_TAG        main
+    GIT_TAG        master
 )
 FetchContent_MakeAvailable(nanocbor)
 
