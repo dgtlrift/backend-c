@@ -70,10 +70,8 @@ FetchContent_Declare(nanocbor
     GIT_REPOSITORY https://github.com/bergzand/NanoCBOR.git
     GIT_TAG        master
 )
-FetchContent_GetProperties(nanocbor)
-if(NOT nanocbor_POPULATED)
-    FetchContent_Populate(nanocbor)
-endif()
+set(NANOCBOR_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+FetchContent_MakeAvailable(nanocbor)
 
 add_library({name}_cbor
     src/{name}.c
