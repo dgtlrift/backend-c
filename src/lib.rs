@@ -64,17 +64,22 @@ project({name}_cbor C)
 
 set(CMAKE_C_STANDARD 11)
 
-# nanocbor — fetch or find locally
+# nanocbor — fetch source and compile directly
 include(FetchContent)
 FetchContent_Declare(nanocbor
     GIT_REPOSITORY https://github.com/bergzand/NanoCBOR.git
     GIT_TAG        master
 )
-FetchContent_MakeAvailable(nanocbor)
+FetchContent_GetProperties(nanocbor)
+if(NOT nanocbor_POPULATED)
+    FetchContent_Populate(nanocbor)
+endif()
 
-add_library({name}_cbor src/{name}.c)
+add_library({name}_cbor
+    src/{name}.c
+    ${{nanocbor_SOURCE_DIR}}/src/nanocbor.c
+)
 target_include_directories({name}_cbor PUBLIC include ${{nanocbor_SOURCE_DIR}}/include)
-target_link_libraries({name}_cbor nanocbor)
 
 # Tests (requires Unity test framework)
 enable_testing()
