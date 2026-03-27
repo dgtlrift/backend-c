@@ -76,7 +76,7 @@ FetchContent_MakeAvailable(nanocbor)
 add_library({name}_cbor
     src/{name}.c
 )
-target_include_directories({name}_cbor PUBLIC include)
+target_include_directories({name}_cbor PUBLIC include ${{nanocbor_SOURCE_DIR}}/include)
 target_link_libraries({name}_cbor PUBLIC nanocbor)
 
 # Tests (requires Unity test framework)
