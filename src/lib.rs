@@ -450,7 +450,7 @@ fn c_encode_call(p: &Primitive, expr: &str) -> String {
         Primitive::Bstr | Primitive::Any =>
             format!("nanocbor_put_bstr(enc, {expr}.ptr, {expr}.len)"),
         Primitive::Tstr               =>
-            format!("nanocbor_put_tstr_len(enc, {expr}.ptr, {expr}.len)"),
+            format!("nanocbor_put_tstrn(enc, {expr}.ptr, {expr}.len)"),
     }
 }
 
