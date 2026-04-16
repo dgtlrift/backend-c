@@ -330,11 +330,31 @@ fn emit_encode_fn(w: &mut IndentWriter, def: &TypeDef, mod_name: &str, opts: &Co
             } else {
                 s.fields.iter().collect()
             };
-            w.line(&format!("nanocbor_fmt_map(enc, {});", fields.len()));
+            // Compute map count: required fields always present; optional only when _present flag set
+            let req_count = fields.iter().filter(|f| !matches!(f.occurrence, Occurrence::Optional)).count();
+            let opt_fields: Vec<_> = fields.iter().filter(|f| matches!(f.occurrence, Occurrence::Optional)).collect();
+            if opt_fields.is_empty() {
+                w.line(&format!("nanocbor_fmt_map(enc, {req_count}u);"));
+            } else {
+                let opt_sum: String = opt_fields.iter().map(|f| {
+                    let fname = to_snake_case(&f.name);
+                    format!("(val->{fname}_present ? 1u : 0u)")
+                }).collect::<Vec<_>>().join(" + ");
+                w.line(&format!("nanocbor_fmt_map(enc, {req_count}u + {opt_sum});"));
+            }
             for f in &fields {
                 let fname = to_snake_case(&f.name);
-                w.line(&format!("nanocbor_put_tstr(enc, {:?});", f.name.as_str()));
-                emit_c_encode_field(w, &f.ty, &format!("val->{fname}"), &f.occurrence, opts);
+                if matches!(f.occurrence, Occurrence::Optional) {
+                    w.line(&format!("if (val->{fname}_present) {{"));
+                    w.indent();
+                    w.line(&format!("nanocbor_put_tstr(enc, {:?});", f.name.as_str()));
+                    emit_c_encode_field(w, &f.ty, &format!("val->{fname}"), &f.occurrence, mod_name, opts);
+                    w.dedent();
+                    w.line("}");
+                } else {
+                    w.line(&format!("nanocbor_put_tstr(enc, {:?});", f.name.as_str()));
+                    emit_c_encode_field(w, &f.ty, &format!("val->{fname}"), &f.occurrence, mod_name, opts);
+                }
             }
             w.line("return NANOCBOR_OK;");
         }
@@ -381,7 +401,7 @@ fn emit_encode_fn(w: &mut IndentWriter, def: &TypeDef, mod_name: &str, opts: &Co
             w.line("nanocbor_fmt_array(enc, val->count);");
             w.line("for (size_t i = 0; i < val->count; i++) {");
             w.indent();
-            emit_c_encode_field(w, &a.element, "val->items[i]", &Occurrence::Required, opts);
+            emit_c_encode_field(w, &a.element, "val->items[i]", &Occurrence::Required, mod_name, opts);
             w.dedent();
             w.line("}");
             w.line("return NANOCBOR_OK;");
@@ -395,7 +415,7 @@ fn emit_encode_fn(w: &mut IndentWriter, def: &TypeDef, mod_name: &str, opts: &Co
             } else {
                 "(*val)".to_string()
             };
-            emit_c_encode_field(w, &a.ty, &inner_expr, &Occurrence::Required, opts);
+            emit_c_encode_field(w, &a.ty, &inner_expr, &Occurrence::Required, mod_name, opts);
             w.line("return NANOCBOR_OK;");
         }
         TypeDef::Map(_) => {
@@ -408,29 +428,26 @@ fn emit_encode_fn(w: &mut IndentWriter, def: &TypeDef, mod_name: &str, opts: &Co
 }
 
 fn emit_c_encode_field(
-    w:    &mut IndentWriter,
-    ty:   &TypeRef,
-    expr: &str,
-    occ:  &Occurrence,
-    opts: &CodegenOptions,
+    w:        &mut IndentWriter,
+    ty:       &TypeRef,
+    expr:     &str,
+    occ:      &Occurrence,
+    mod_name: &str,
+    opts:     &CodegenOptions,
 ) {
-    match occ {
-        Occurrence::Optional => {
-            // encoded presence flag handled by caller struct layout
-        }
-        _ => {}
-    }
     match ty {
         TypeRef::Primitive(p) => {
             let call = c_encode_call(p, expr);
             w.line(&format!("{call};"));
         }
         TypeRef::Named(n) => {
-            w.line(&format!("/* encode {} */", n));
+            let pfx = to_snake_case(mod_name);
+            let tn  = to_snake_case(n);
+            w.line(&format!("{pfx}_{tn}_encode(enc, &{expr});"));
         }
         TypeRef::Tagged(tag, inner) => {
             w.line(&format!("nanocbor_fmt_tag(enc, {});", tag.0));
-            emit_c_encode_field(w, inner, expr, &Occurrence::Required, opts);
+            emit_c_encode_field(w, inner, expr, occ, mod_name, opts);
         }
         TypeRef::Choice(_) => {
             w.line("/* choice encode */");
@@ -509,7 +526,7 @@ fn emit_decode_fn(w: &mut IndentWriter, def: &TypeDef, mod_name: &str, opts: &Co
                     fkey.len(), fkey, fkey.len()
                 ));
                 w.indent();
-                emit_c_decode_field(w, &f.ty, &format!("out->{fname}"), &f.constraints, &fname, &pfx, &pfx_upper, opts);
+                emit_c_decode_field(w, &f.ty, &format!("out->{fname}"), &f.constraints, &fname, &pfx, &pfx_upper, "&map", opts);
                 if matches!(f.occurrence, Occurrence::Optional) {
                     w.line(&format!("out->{fname}_present = true;"));
                 }
@@ -625,7 +642,7 @@ fn emit_decode_fn(w: &mut IndentWriter, def: &TypeDef, mod_name: &str, opts: &Co
             w.line("out->count = 0;");
             w.line(&format!("while (!nanocbor_at_end(&arr) && out->count < {cap}) {{"));
             w.indent();
-            emit_c_decode_field(w, &a.element, "out->items[out->count]", &[], "item", &pfx, &pfx_upper, opts);
+            emit_c_decode_field(w, &a.element, "out->items[out->count]", &[], "item", &pfx, &pfx_upper, "&arr", opts);
             w.line("out->count++;");
             w.dedent();
             w.line("}");
@@ -655,7 +672,7 @@ fn emit_decode_fn(w: &mut IndentWriter, def: &TypeDef, mod_name: &str, opts: &Co
             } else {
                 "(*out)".to_string()
             };
-            emit_c_decode_field(w, &a.ty, &dest, &a.constraints, &type_name, &pfx, &pfx_upper, opts);
+            emit_c_decode_field(w, &a.ty, &dest, &a.constraints, &type_name, &pfx, &pfx_upper, "dec", opts);
             w.line("return NANOCBOR_OK;");
         }
 
@@ -669,23 +686,24 @@ fn emit_decode_fn(w: &mut IndentWriter, def: &TypeDef, mod_name: &str, opts: &Co
 }
 
 fn emit_c_decode_field(
-    w:         &mut IndentWriter,
-    ty:        &TypeRef,
-    dest:      &str,
+    w:           &mut IndentWriter,
+    ty:          &TypeRef,
+    dest:        &str,
     constraints: &[Constraint],
-    field_name: &str,
-    pfx:       &str,
-    pfx_upper: &str,
-    opts:      &CodegenOptions,
+    field_name:  &str,
+    pfx:         &str,
+    pfx_upper:   &str,
+    dec_expr:    &str,
+    opts:        &CodegenOptions,
 ) {
     match ty {
         TypeRef::Primitive(p) => {
-            let call = c_decode_call(p, dest);
+            let call = c_decode_call_expr(p, dest, dec_expr);
             w.line(&format!("if ({call} < 0) return -1;"));
 
             // Inline validation
             for c in constraints {
-                if let Some(check) = constraint_to_c_check(c, dest) {
+                if let Some(check) = c_constraint_check(c, dest, p) {
                     w.line(&format!("if (!({check})) {{"));
                     w.indent();
                     w.line(&format!(
@@ -700,42 +718,88 @@ fn emit_c_decode_field(
         }
         TypeRef::Named(n) => {
             let tn = to_snake_case(n);
-            w.line(&format!("if ({pfx}_{tn}_decode(dec, &{dest}, cb, ctx) < 0) return -1;"));
+            w.line(&format!("if ({pfx}_{tn}_decode({dec_expr}, &{dest}, cb, ctx) < 0) return -1;"));
         }
         TypeRef::Tagged(tag, inner) => {
             w.line("{");
             w.indent();
             w.line("uint32_t tag;");
-            w.line("if (nanocbor_get_tag(dec, &tag) < 0) return -1;");
+            w.line(&format!("if (nanocbor_get_tag({dec_expr}, &tag) < 0) return -1;"));
             w.line(&format!("if (tag != {}) return -1;", tag.0));
-            emit_c_decode_field(w, inner, dest, constraints, field_name, pfx, pfx_upper, opts);
+            emit_c_decode_field(w, inner, dest, constraints, field_name, pfx, pfx_upper, dec_expr, opts);
             w.dedent();
             w.line("}");
         }
         TypeRef::Choice(_) => {
-            w.line("nanocbor_skip(dec); /* choice — skip */");
+            w.line(&format!("nanocbor_skip({dec_expr}); /* choice — skip */"));
         }
     }
 }
 
-fn c_decode_call(p: &Primitive, dest: &str) -> String {
+/// Type-aware constraint check for C.
+///
+/// For string/byte primitives, `.size` checks the `.len` field.
+/// For integer primitives, `.size N` checks that the value fits in N bytes
+/// (e.g., `.size 4` on a uint → `val <= 0xFFFFFFFFU`).
+fn c_constraint_check(c: &Constraint, val_expr: &str, p: &Primitive) -> Option<String> {
+    match c {
+        Constraint::SizeExact(n) => match p {
+            Primitive::Uint => {
+                let max = uint_max_for_bytes(*n)?;
+                Some(format!("{val_expr} <= {max}"))
+            }
+            Primitive::Int => {
+                let (lo, hi) = int_range_for_bytes(*n)?;
+                Some(format!("{val_expr} >= {lo} && {val_expr} <= {hi}"))
+            }
+            _ => constraint_to_c_check(c, val_expr),
+        },
+        Constraint::SizeRange { .. } => match p {
+            Primitive::Uint | Primitive::Int => None, // uncommon; skip
+            _ => constraint_to_c_check(c, val_expr),
+        },
+        _ => constraint_to_c_check(c, val_expr),
+    }
+}
+
+fn uint_max_for_bytes(n: usize) -> Option<String> {
+    match n {
+        1 => Some("0xFFU".into()),
+        2 => Some("0xFFFFU".into()),
+        4 => Some("0xFFFFFFFFU".into()),
+        8 => None, // uint64 always fits
+        _ => None,
+    }
+}
+
+fn int_range_for_bytes(n: usize) -> Option<(i64, i64)> {
+    match n {
+        1 => Some((-128, 127)),
+        2 => Some((-32768, 32767)),
+        4 => Some((-2147483648, 2147483647)),
+        8 => None,
+        _ => None,
+    }
+}
+
+fn c_decode_call_expr(p: &Primitive, dest: &str, dec_expr: &str) -> String {
     match p {
         Primitive::Bool =>
-            format!("nanocbor_get_bool(dec, &{dest})"),
+            format!("nanocbor_get_bool({dec_expr}, &{dest})"),
         Primitive::Null | Primitive::Undefined =>
-            format!("nanocbor_get_null(dec)"),
+            format!("nanocbor_get_null({dec_expr})"),
         Primitive::Uint =>
-            format!("nanocbor_get_uint64(dec, &{dest})"),
+            format!("nanocbor_get_uint64({dec_expr}, &{dest})"),
         Primitive::Int =>
-            format!("nanocbor_get_int64(dec, &{dest})"),
+            format!("nanocbor_get_int64({dec_expr}, &{dest})"),
         Primitive::Float32 | Primitive::Float16 =>
-            format!("nanocbor_get_float(dec, &{dest})"),
+            format!("nanocbor_get_float({dec_expr}, &{dest})"),
         Primitive::Float64 | Primitive::Float =>
-            format!("nanocbor_get_double(dec, &{dest})"),
+            format!("nanocbor_get_double({dec_expr}, &{dest})"),
         Primitive::Tstr =>
-            format!("(nanocbor_get_tstr(dec, (const uint8_t**)&{dest}.ptr, &{dest}.len))"),
+            format!("(nanocbor_get_tstr({dec_expr}, (const uint8_t**)&{dest}.ptr, &{dest}.len))"),
         Primitive::Bstr | Primitive::Any =>
-            format!("nanocbor_get_bstr(dec, &{dest}.ptr, &{dest}.len)"),
+            format!("nanocbor_get_bstr({dec_expr}, &{dest}.ptr, &{dest}.len)"),
     }
 }
 
@@ -758,7 +822,7 @@ fn emit_tests(module: &IrModule, opts: &CodegenOptions) -> String {
 
     for (_, def) in &module.types {
         match def {
-            TypeDef::Struct(s) => emit_c_struct_test(&mut w, s, &pfx, opts),
+            TypeDef::Struct(s) => emit_c_struct_test(&mut w, s, &pfx, module, opts),
             TypeDef::Alias(a)  => emit_c_alias_test(&mut w, a, &pfx, opts),
             TypeDef::Array(a)  => emit_c_array_test(&mut w, a, &pfx, opts),
             TypeDef::Enum(e)   => emit_c_enum_test(&mut w, e, &pfx, opts),
@@ -782,10 +846,21 @@ fn emit_tests(module: &IrModule, opts: &CodegenOptions) -> String {
     w.finish()
 }
 
-fn emit_c_struct_test(w: &mut IndentWriter, s: &StructDef, pfx: &str, opts: &CodegenOptions) {
+fn emit_c_struct_test(w: &mut IndentWriter, s: &StructDef, pfx: &str, module: &IrModule, opts: &CodegenOptions) {
     let type_name = to_snake_case(&s.name);
     w.line(&format!("static void test_{pfx}_{type_name}_roundtrip(void) {{"));
     w.indent();
+
+    // Static buffers for any size-constrained tstr named fields
+    for f in &s.fields {
+        let fname = to_snake_case(&f.name);
+        if let TypeRef::Named(n) = &f.ty {
+            if let Some(n) = tstr_size_constraint_for(n, module) {
+                let s_lit: String = "a".repeat(n);
+                w.line(&format!("static const char _{fname}_data[{n}] = {:?};", s_lit));
+            }
+        }
+    }
 
     // Build a zeroed instance
     w.line(&format!("{type_name}_t original = {{0}};"));
@@ -793,7 +868,14 @@ fn emit_c_struct_test(w: &mut IndentWriter, s: &StructDef, pfx: &str, opts: &Cod
     // Fill in default values for each field
     for f in &s.fields {
         let fname = to_snake_case(&f.name);
-        let val   = c_default_value(&f.ty, opts);
+        if let TypeRef::Named(n) = &f.ty {
+            if let Some(n) = tstr_size_constraint_for(n, module) {
+                w.line(&format!("original.{fname}.value.ptr = _{fname}_data;"));
+                w.line(&format!("original.{fname}.value.len = {n};"));
+                continue;
+            }
+        }
+        let val = c_default_value(&f.ty, opts);
         if let Some(v) = val {
             w.line(&format!("original.{fname} = {v};"));
         }
@@ -837,7 +919,22 @@ fn emit_c_alias_test(w: &mut IndentWriter, a: &AliasDef, pfx: &str, _opts: &Code
     let type_name = to_snake_case(&a.name);
     w.line(&format!("static void test_{pfx}_{type_name}_roundtrip(void) {{"));
     w.indent();
+
+    // For size-constrained tstr aliases, initialise with a valid-length literal
+    // so that the roundtrip encode→decode passes constraint validation.
+    let tstr_size = a.constraints.iter().find_map(|c| match c {
+        Constraint::SizeExact(n) => Some(*n),
+        Constraint::SizeRange { min: Some(n), .. } => Some(*n),
+        _ => None,
+    }).filter(|_| matches!(&a.ty, TypeRef::Primitive(Primitive::Tstr)));
+
     w.line(&format!("{type_name}_t original = {{0}};"));
+    if let Some(n) = tstr_size {
+        let s_lit: String = "a".repeat(n);
+        w.line(&format!("static const char _val_data[{n}] = {:?};", s_lit));
+        w.line(&format!("original.value.ptr = _val_data;"));
+        w.line(&format!("original.value.len = {n};"));
+    }
     w.line("nanocbor_encoder_t enc;");
     w.line("nanocbor_encoder_init(&enc, buf, sizeof(buf));");
     w.line(&format!("assert({pfx}_{type_name}_encode(&enc, &original) == 0);"));
@@ -917,6 +1014,20 @@ fn typeref_to_c(ty: &TypeRef, opts: &CodegenOptions) -> String {
         TypeRef::Choice(cs)      => cs.first()
             .map(|c| typeref_to_c(c, opts))
             .unwrap_or_else(|| "void*".into()),
+    }
+}
+
+/// If `type_name` resolves to a `tstr .size N` alias, return `Some(N)`.
+fn tstr_size_constraint_for(type_name: &str, module: &IrModule) -> Option<usize> {
+    match module.types.get(type_name)? {
+        TypeDef::Alias(a) if matches!(&a.ty, TypeRef::Primitive(Primitive::Tstr)) => {
+            a.constraints.iter().find_map(|c| match c {
+                Constraint::SizeExact(n) => Some(*n),
+                Constraint::SizeRange { min: Some(n), .. } => Some(*n),
+                _ => None,
+            })
+        }
+        _ => None,
     }
 }
 
