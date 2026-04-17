@@ -96,16 +96,21 @@ project({name}_cbor C)
 
 set(CMAKE_C_STANDARD 11)
 
-# nanocbor — fetch source and compile directly
+# macOS: force-include compat shim for nanocbor's Linux byte-order functions.
+# Must be set before FetchContent_MakeAvailable so it applies to nanocbor's
+# own compilation units as well.
+if(APPLE)
+    set(_nanocbor_compat "${{CMAKE_CURRENT_SOURCE_DIR}}/include/nanocbor_compat.h")
+    add_compile_options(-include "${{_nanocbor_compat}}")
+endif()
+
 include(FetchContent)
 FetchContent_Declare(nanocbor
     GIT_REPOSITORY https://github.com/bergzand/NanoCBOR.git
     GIT_TAG        master
 )
-FetchContent_GetProperties(nanocbor)
-if(NOT nanocbor_POPULATED)
-    FetchContent_Populate(nanocbor)
-endif()
+set(NANOCBOR_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+FetchContent_MakeAvailable(nanocbor)
 
 file(GLOB NANOCBOR_SOURCES "${{nanocbor_SOURCE_DIR}}/src/*.c")
 
@@ -114,13 +119,6 @@ add_library({name}_cbor
     ${{NANOCBOR_SOURCES}}
 )
 target_include_directories({name}_cbor PUBLIC include ${{nanocbor_SOURCE_DIR}}/include)
-
-# macOS: nanocbor uses Linux-only byte-order functions; force-include a compat shim
-if(APPLE)
-    target_compile_options({name}_cbor PRIVATE
-        -include "${{CMAKE_CURRENT_SOURCE_DIR}}/include/nanocbor_compat.h"
-    )
-endif()
 
 # Tests (requires Unity test framework)
 enable_testing()
