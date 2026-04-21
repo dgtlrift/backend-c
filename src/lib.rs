@@ -151,6 +151,8 @@ fn emit_header(module: &IrModule, opts: &CodegenOptions) -> String {
     w.blank();
     w.line("/* Zero-copy byte slice */");
     w.line("typedef struct { const uint8_t *ptr; size_t len; } cbor_bytes_t;");
+    w.line("typedef cbor_bytes_t cbor_slice_t;");
+    w.line("typedef cbor_bytes_t cbor_any_t;");
     w.blank();
 
     // ── Error codes ───────────────────────────────────────────────────────────
@@ -937,7 +939,7 @@ fn emit_c_struct_test(w: &mut IndentWriter, s: &StructDef, pfx: &str, module: &I
     for f in &s.fields {
         let fname = to_snake_case(&f.name);
         match &f.ty {
-            TypeRef::Primitive(Primitive::Tstr | Primitive::Bstr) => {
+            TypeRef::Primitive(Primitive::Tstr | Primitive::Bstr | Primitive::Any) => {
                 w.line(&format!("assert(original.{fname}.len == decoded.{fname}.len);"));
             }
             TypeRef::Primitive(_) => {
