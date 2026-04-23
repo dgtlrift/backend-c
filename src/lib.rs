@@ -914,14 +914,24 @@ fn emit_c_struct_test(w: &mut IndentWriter, s: &StructDef, pfx: &str, module: &I
     w.line(&format!("static void test_{pfx}_{type_name}_roundtrip(void) {{"));
     w.indent();
 
-    // Static buffers for any size-constrained tstr named fields
+    // Static buffers for any size-constrained tstr named fields, and for inline Tstr/Bstr/Any fields
     for f in &s.fields {
+        if matches!(f.occurrence, Occurrence::Optional) { continue; }
         let fname = to_snake_case(&f.name);
         if let TypeRef::Named(n) = &f.ty {
             if let Some(n) = tstr_size_constraint_for(n, module) {
                 let s_lit: String = "a".repeat(n);
                 w.line(&format!("static const char _{fname}_data[{n}] = {:?};", s_lit));
             }
+        }
+        match effective_primitive(&f.ty) {
+            Some(Primitive::Tstr) => {
+                w.line(&format!("static const char _{fname}_str[] = \"hello\";"));
+            }
+            Some(Primitive::Bstr | Primitive::Any) => {
+                w.line(&format!("static const uint8_t _{fname}_cbor[1] = {{0xf6}};"));
+            }
+            _ => {}
         }
     }
 
@@ -930,6 +940,7 @@ fn emit_c_struct_test(w: &mut IndentWriter, s: &StructDef, pfx: &str, module: &I
 
     // Fill in default values for each field
     for f in &s.fields {
+        if matches!(f.occurrence, Occurrence::Optional) { continue; }
         let fname = to_snake_case(&f.name);
         if let TypeRef::Named(n) = &f.ty {
             if let Some(n) = tstr_size_constraint_for(n, module) {
@@ -937,6 +948,19 @@ fn emit_c_struct_test(w: &mut IndentWriter, s: &StructDef, pfx: &str, module: &I
                 w.line(&format!("original.{fname}.value.len = {n};"));
                 continue;
             }
+        }
+        match effective_primitive(&f.ty) {
+            Some(Primitive::Tstr) => {
+                w.line(&format!("original.{fname}.ptr = _{fname}_str;"));
+                w.line(&format!("original.{fname}.len = 5; /* \"hello\" */"));
+                continue;
+            }
+            Some(Primitive::Bstr | Primitive::Any) => {
+                w.line(&format!("original.{fname}.ptr = _{fname}_cbor;"));
+                w.line(&format!("original.{fname}.len = 1; /* CBOR null 0xf6 */"));
+                continue;
+            }
+            _ => {}
         }
         let val = c_default_value(&f.ty, opts);
         if let Some(v) = val {
@@ -1080,6 +1104,16 @@ fn typeref_to_c(ty: &TypeRef, opts: &CodegenOptions) -> String {
     }
 }
 
+/// Returns the first concrete Primitive in a TypeRef, following Tagged and Choice.
+fn effective_primitive(ty: &TypeRef) -> Option<&Primitive> {
+    match ty {
+        TypeRef::Primitive(p)     => Some(p),
+        TypeRef::Choice(cs)       => cs.first().and_then(|c| effective_primitive(c)),
+        TypeRef::Tagged(_, inner) => effective_primitive(inner),
+        _ => None,
+    }
+}
+
 /// If `type_name` resolves to a `tstr .size N` alias, return `Some(N)`.
 fn tstr_size_constraint_for(type_name: &str, module: &IrModule) -> Option<usize> {
     match module.types.get(type_name)? {
@@ -1096,11 +1130,11 @@ fn tstr_size_constraint_for(type_name: &str, module: &IrModule) -> Option<usize>
 
 fn c_default_value(ty: &TypeRef, _opts: &CodegenOptions) -> Option<String> {
     match ty {
-        TypeRef::Primitive(Primitive::Uint) => Some("0U".into()),
-        TypeRef::Primitive(Primitive::Int)  => Some("0".into()),
-        TypeRef::Primitive(Primitive::Bool) => Some("false".into()),
-        TypeRef::Primitive(Primitive::Float32 | Primitive::Float16) => Some("0.0f".into()),
-        TypeRef::Primitive(Primitive::Float64 | Primitive::Float)   => Some("0.0".into()),
+        TypeRef::Primitive(Primitive::Uint) => Some("42U".into()),
+        TypeRef::Primitive(Primitive::Int)  => Some("-1".into()),
+        TypeRef::Primitive(Primitive::Bool) => Some("true".into()),
+        TypeRef::Primitive(Primitive::Float32 | Primitive::Float16) => Some("1.0f".into()),
+        TypeRef::Primitive(Primitive::Float64 | Primitive::Float)   => Some("1.0".into()),
         _ => None,
     }
 }
