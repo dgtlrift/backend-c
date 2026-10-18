@@ -821,6 +821,16 @@ fn c_constraint_check(c: &Constraint, val_expr: &str, p: &Primitive) -> Option<S
             Primitive::Uint | Primitive::Int => None, // uncommon; skip
             _ => constraint_to_c_check(c, val_expr),
         },
+        // A text literal (`cat: "kernel"`): compare length and bytes; `==` would
+        // compare a `cbor_str_t` struct against a pointer.
+        Constraint::Eq(cddlc_ir::LiteralValue::Text(t)) if *p == Primitive::Tstr => Some(format!(
+            "({val_expr}.len == {n} && memcmp({val_expr}.ptr, {t:?}, {n}) == 0)",
+            n = t.len()
+        )),
+        Constraint::Ne(cddlc_ir::LiteralValue::Text(t)) if *p == Primitive::Tstr => Some(format!(
+            "!({val_expr}.len == {n} && memcmp({val_expr}.ptr, {t:?}, {n}) == 0)",
+            n = t.len()
+        )),
         _ => constraint_to_c_check(c, val_expr),
     }
 }
